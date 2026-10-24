@@ -1,0 +1,25 @@
+{
+  "name": "修复小米互传自动关闭",
+  "order": 20,
+  "desc": "拦截 mishare_enabled=false 写入、把 switch_status 抬到 2、屏蔽空白倒计时 Toast。",
+  "upstream_absorbed_if": [
+    {
+      "path": "library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/mishare/NoAutoTurnOff.kt",
+      "contains": "mishare_enabled"
+    },
+    {
+      "path": "library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/mishare/NoAutoTurnOff.kt",
+      "contains": "changeSwitchStatus"
+    }
+  ],
+  "our_markers": [
+    {
+      "path": "library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/mishare/NoAutoTurnOff.kt",
+      "contains": "NoAutoTurnOffSetAdvertAll"
+    },
+    {
+      "path": "library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/mishare/NoAutoTurnOff.kt",
+      "contains": "isBlankMishareToast"
+    }
+  ]
+}

@@ -1,0 +1,148 @@
+diff --git a/library/core/src/main/res/values-zh-rCN/strings_rmdots.xml b/library/core/src/main/res/values-zh-rCN/strings_rmdots.xml
+new file mode 100644
+index 000000000..277723d24
+--- /dev/null
++++ b/library/core/src/main/res/values-zh-rCN/strings_rmdots.xml
+@@ -0,0 +1,4 @@
++<resources>
++    <string name="system_ui_status_bar_hide_notification_dots">隐藏通知省略点</string>
++    <string name="system_ui_status_bar_hide_notification_dots_summary">隐藏通知图标溢出时的省略点，不增加图标数量。修改后重启系统界面。</string>
++</resources>
+diff --git a/library/core/src/main/res/values/strings_rmdots.xml b/library/core/src/main/res/values/strings_rmdots.xml
+new file mode 100644
+index 000000000..74f513fcf
+--- /dev/null
++++ b/library/core/src/main/res/values/strings_rmdots.xml
+@@ -0,0 +1,4 @@
++<resources>
++    <string name="system_ui_status_bar_hide_notification_dots">Hide notification overflow dots</string>
++    <string name="system_ui_status_bar_hide_notification_dots_summary">Hides dots when notification icons overflow. Does not increase icon capacity. Restart System UI after changing.</string>
++</resources>
+diff --git a/library/core/src/main/res/xml/system_ui_status_bar_icon_manage_new.xml b/library/core/src/main/res/xml/system_ui_status_bar_icon_manage_new.xml
+index a726fb870..43ad141d4 100644
+--- a/library/core/src/main/res/xml/system_ui_status_bar_icon_manage_new.xml
++++ b/library/core/src/main/res/xml/system_ui_status_bar_icon_manage_new.xml
+@@ -158,6 +158,12 @@
+     </PreferenceCategory>
+ 
+     <PreferenceCategory android:title="@string/system_ui_statusbar_iconmanage_notify_title">
++        <SwitchPreference
++            android:defaultValue="false"
++            android:key="prefs_key_system_ui_status_bar_hide_notification_dots"
++            android:title="@string/system_ui_status_bar_hide_notification_dots"
++            android:summary="@string/system_ui_status_bar_hide_notification_dots_summary" />
++
+         <SwitchPreference
+             android:defaultValue="false"
+             android:key="prefs_key_system_ui_status_bar_notification_icon_maximum_enable"
+diff --git a/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/app/SystemUI/SystemUIB.java b/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/app/SystemUI/SystemUIB.java
+index b3d1977b9..15101d363 100644
+--- a/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/app/SystemUI/SystemUIB.java
++++ b/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/app/SystemUI/SystemUIB.java
+@@ -89,6 +89,7 @@ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.DataSa
+ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.HideVoWiFiIcon;
+ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.IconsFromSystemManager;
+ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.NotificationIconColumns;
++import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.HideNotificationDots;
+ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.SelectiveHideIconForAlarmClock;
+ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.StatusBarIcon;
+ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.SwapWiFiAndMobileNetwork;
+@@ -143,6 +144,7 @@ public class SystemUIB extends BaseLoad {
+         initHook(HideVoWiFiIcon.INSTANCE, PrefsBridge.getBoolean("system_ui_status_bar_icon_vowifi") || PrefsBridge.getBoolean("system_ui_status_bar_icon_volte"));
+         initHook(new SelectiveHideIconForAlarmClock(), PrefsBridge.getStringAsInt("system_ui_status_bar_icon_alarm_clock", 0) == 3 && PrefsBridge.getInt("system_ui_status_bar_icon_alarm_clock_n", 0) > 0);
+         initHook(new NotificationIconColumns(), PrefsBridge.getBoolean("system_ui_status_bar_notification_icon_maximum_enable"));
++        initHook(new HideNotificationDots(), PrefsBridge.getBoolean("system_ui_status_bar_hide_notification_dots"));
+         initHook(NotificationImportanceHyperOSFix.INSTANCE, PrefsBridge.getBoolean("system_settings_more_notification_settings"));
+         initHook(new MoreNotificationSettings(), PrefsBridge.getBoolean("system_settings_more_notification_settings"));
+ 
+diff --git a/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/app/SystemUI/SystemUIV.java b/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/app/SystemUI/SystemUIV.java
+index c9b9e5882..35b0ad74f 100644
+--- a/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/app/SystemUI/SystemUIV.java
++++ b/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/app/SystemUI/SystemUIV.java
+@@ -110,6 +110,7 @@ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.HideBa
+ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.HideVoWiFiIcon;
+ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.IconsFromSystemManager;
+ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.NotificationIconColumns;
++import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.HideNotificationDots;
+ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.SelectiveHideIconForAlarmClock;
+ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.StatusBarIcon;
+ import com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all.SwapWiFiAndMobileNetwork;
+@@ -166,6 +167,7 @@ public class SystemUIV extends BaseLoad {
+         initHook(WifiStandard.INSTANCE, PrefsBridge.getStringAsInt("system_ui_status_bar_icon_wifi_standard", 0) > 0);
+         initHook(new SelectiveHideIconForAlarmClock(), PrefsBridge.getStringAsInt("system_ui_status_bar_icon_alarm_clock", 0) == 3 && PrefsBridge.getInt("system_ui_status_bar_icon_alarm_clock_n", 0) > 0);
+         initHook(new NotificationIconColumns(), PrefsBridge.getBoolean("system_ui_status_bar_notification_icon_maximum_enable"));
++        initHook(new HideNotificationDots(), PrefsBridge.getBoolean("system_ui_status_bar_hide_notification_dots"));
+         initHook(new HideStatusBarBeforeScreenshot(), PrefsBridge.getBoolean("system_ui_status_bar_hide_icon"));
+         initHook(new DataSaverIcon(), PrefsBridge.getStringAsInt("system_ui_status_bar_icon_data_saver", 0) != 0);
+         initHook(WifiNetworkIndicator.INSTANCE, PrefsBridge.getBoolean("system_ui_status_bar_icon_wifi_network_indicator_new"));
+diff --git a/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/systemui/statusbar/icon/all/HideNotificationDots.java b/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/systemui/statusbar/icon/all/HideNotificationDots.java
+new file mode 100644
+index 000000000..6a2eaeb09
+--- /dev/null
++++ b/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/systemui/statusbar/icon/all/HideNotificationDots.java
+@@ -0,0 +1,65 @@
++package com.sevtinge.hyperceiler.libhook.rules.systemui.statusbar.icon.all;
++
++import android.view.View;
++import com.sevtinge.hyperceiler.common.log.XposedLog;
++import com.sevtinge.hyperceiler.libhook.base.BaseHook;
++import io.github.lingqiqi5211.ezhooktool.xposed.java.IMethodHook;
++import io.github.lingqiqi5211.ezhooktool.xposed.common.HookParam;
++import java.lang.reflect.Field;
++import java.lang.reflect.Modifier;
++import io.github.libxposed.api.XposedInterface;
++
++/** Hides overflow dots while retaining SystemUI's icon layout and animation. */
++public final class HideNotificationDots extends BaseHook {
++    private static final int STATE_DOT = 1;
++    private static final int STATE_HIDDEN = 2;
++    private volatile boolean disabled;
++
++    @Override
++    public void init() {
++        Class<?> iconState = findClassIfExists(
++            "com.android.systemui.statusbar.phone.NotificationIconContainer$IconState", null);
++        if (iconState == null) {
++            XposedLog.w(TAG, "Notification IconState unavailable; skipping");
++            return;
++        }
++        try {
++            Field field = null;
++            for (Class<?> owner = iconState; owner != null; owner = owner.getSuperclass()) {
++                try {
++                    field = owner.getDeclaredField("visibleState");
++                    break;
++                } catch (NoSuchFieldException ignored) { }
++            }
++            if (field == null || field.getType() != int.class
++                || Modifier.isStatic(field.getModifiers()) || Modifier.isFinal(field.getModifiers())) {
++                XposedLog.w(TAG, "Incompatible visibleState field; skipping");
++                return;
++            }
++            iconState.getDeclaredMethod("applyToView", View.class);
++            field.setAccessible(true);
++            final Field visibleState = field;
++            disabled = false;
++            XposedInterface.HookHandle handle = findAndHookMethod(iconState, "applyToView", View.class, new IMethodHook() {
++                @Override
++                public void before(HookParam param) {
++                    if (disabled) return;
++                    try {
++                        Object state = param.getThisObject();
++                        if (visibleState.getInt(state) == STATE_DOT) {
++                            visibleState.setInt(state, STATE_HIDDEN);
++                        }
++                    } catch (IllegalAccessException | IllegalArgumentException failure) {
++                        if (!disabled) {
++                            disabled = true;
++                            XposedLog.w(TAG, "Field access failed; dot suppression disabled");
++                        }
++                    }
++                }
++            });
++            if (handle != null) registerHotReloadCleanup(handle::unhook);
++        } catch (ReflectiveOperationException | SecurityException failure) {
++            XposedLog.w(TAG, "Incompatible SystemUI; dot suppression skipped");
++        }
++    }
++}
