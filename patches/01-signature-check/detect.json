@@ -1,0 +1,33 @@
+{
+  "name": "移除签名校验提示",
+  "order": 10,
+  "desc": "自签名安装时不再弹「签名验证失败」横幅，设备信息也不再采集签名。",
+  "upstream_absorbed_if": [
+    {
+      "path": "app/src/main/java/com/sevtinge/hyperceiler/utils/NoticeProcessor.java",
+      "absent_contains": "SignUtils.isSignCheckPass"
+    },
+    {
+      "path": "app/src/main/java/com/sevtinge/hyperceiler/home/banner/HomePageBannerManager.java",
+      "absent_contains": "SignUtils.isSignCheckPass"
+    },
+    {
+      "path": "app/src/main/java/com/sevtinge/hyperceiler/utils/DeviceInfoBuilder.java",
+      "absent_contains": "getSHA256Signature"
+    }
+  ],
+  "our_markers": [
+    {
+      "path": "app/src/main/java/com/sevtinge/hyperceiler/utils/NoticeProcessor.java",
+      "contains": "signCheckPassNeed || true"
+    },
+    {
+      "path": "app/src/main/java/com/sevtinge/hyperceiler/home/banner/HomePageBannerManager.java",
+      "contains": "if (false && !SignUtils.isSignCheckPass"
+    },
+    {
+      "path": "app/src/main/java/com/sevtinge/hyperceiler/utils/DeviceInfoBuilder.java",
+      "contains": "Signature fields removed by local build"
+    }
+  ]
+}

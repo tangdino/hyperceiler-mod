@@ -1,0 +1,659 @@
+diff --git a/app/src/main/AndroidManifest.xml b/app/src/main/AndroidManifest.xml
+index 631a80033..e58a27ee7 100644
+--- a/app/src/main/AndroidManifest.xml
++++ b/app/src/main/AndroidManifest.xml
+@@ -21,6 +21,8 @@
+     xmlns:tools="http://schemas.android.com/tools">
+ 
+     <uses-permission android:name="android.permission.INTERNET" />
++    <!-- 手动检查更新后调起系统安装器所需 -->
++    <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
+     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
+     <uses-permission
+diff --git a/app/src/main/java/com/sevtinge/hyperceiler/about/widget/VersionCard.java b/app/src/main/java/com/sevtinge/hyperceiler/about/widget/VersionCard.java
+index c155577e7..0b4e50b46 100644
+--- a/app/src/main/java/com/sevtinge/hyperceiler/about/widget/VersionCard.java
++++ b/app/src/main/java/com/sevtinge/hyperceiler/about/widget/VersionCard.java
+@@ -13,6 +13,8 @@ import android.animation.ValueAnimator;
+ import android.app.Activity;
+ import android.app.NotificationManager;
+ import android.content.Context;
++import android.content.Intent;
++import android.net.Uri;
+ import android.graphics.Canvas;
+ import android.os.Handler;
+ import android.os.Looper;
+@@ -45,10 +47,12 @@ import com.sevtinge.hyperceiler.utils.NotificationHelper;
+ import com.sevtinge.hyperceiler.utils.PermissionUtils;
+ import com.sevtinge.hyperceiler.utils.PersistConfig;
+ import com.sevtinge.hyperceiler.utils.SettingsFeatures;
++import com.sevtinge.hyperceiler.utils.Updater;
+ 
+ import java.security.SecureRandom;
+ import java.util.Random;
+ 
++import fan.appcompat.app.AlertDialog;
+ import fan.cardview.HyperCardView;
+ import fan.core.utils.MiuiBlurUtils;
+ import fan.device.DeviceUtils;
+@@ -384,7 +388,117 @@ public class VersionCard extends FrameLayout implements View.OnClickListener {
+ 
+     @Override
+     public void onClick(View v) {
+-        //Toast.makeText(getContext(), "click update", Toast.LENGTH_SHORT).show();
++        // 点击版本卡片：手动检查更新。上游此方法原为空实现（"去掉检查更新"
++        // 的需求在上游根本不存在，这里是从零新增入口，不是恢复被删功能）。
++        Updater.check(getContext(), mUpdateCallback);
++    }
++
++    private final Updater.Callback mUpdateCallback = new Updater.Callback() {
++        @Override
++        public void onResult(@Nullable Updater.Release rel, @Nullable String error) {
++            if (!isAttachedToWindow()) return;
++            Context ctx = getContext();
++
++            if (error != null) {
++                new AlertDialog.Builder(ctx)
++                    .setTitle(R.string.app_version_check_update)
++                    .setMessage(getContext().getString(R.string.app_version_check_failed) + error)
++                    .setPositiveButton(android.R.string.ok, null)
++                    .show();
++                return;
++            }
++            if (rel == null) {
++                new AlertDialog.Builder(ctx)
++                    .setTitle(R.string.app_version_check_update)
++                    .setMessage(R.string.app_version_latest)
++                    .setPositiveButton(android.R.string.ok, null)
++                    .show();
++                return;
++            }
++            showUpdateDialog(ctx, rel);
++        }
++
++        @Override
++        public void onProgress(int percent, long downloaded, long total) {
++            // 查询阶段没有进度，实际下载进度由 mDownloadCallback 处理
++        }
++    };
++
++    /** 下载进度框；null 表示当前没有下载在进行。 */
++    private AlertDialog mProgressDialog;
++
++    /** 下载回调：只负责刷新进度条文案并在结束时收起。 */
++    private final Updater.Callback mDownloadCallback = new Updater.Callback() {
++        @Override
++        public void onResult(@Nullable Updater.Release rel, @Nullable String error) {
++            dismissProgress();
++            if (error != null && isAttachedToWindow()) {
++                Updater.toast(getContext(),
++                    getContext().getString(R.string.app_version_check_failed) + error);
++            }
++        }
++
++        @Override
++        public void onProgress(int percent, long downloaded, long total) {
++            if (mProgressDialog == null || !mProgressDialog.isShowing()) return;
++            String text = percent >= 0
++                ? percent + "%  (" + fmtSize(downloaded) + " / " + fmtSize(total) + ")"
++                : fmtSize(downloaded);
++            mProgressDialog.setMessage(text);
++        }
++    };
++
++    private void showUpdateDialog(Context ctx, Updater.Release rel) {
++        String msg = getContext().getString(R.string.app_version_new_found, rel.versionName)
++            + rel.tag;
++        if (rel.notes != null && !rel.notes.isEmpty()) {
++            msg = msg + " (" + rel.notes + ")";
++        }
++        AlertDialog.Builder b = new AlertDialog.Builder(ctx)
++            .setTitle(R.string.app_version_check_update)
++            .setMessage(msg)
++            .setNegativeButton(android.R.string.cancel, null);
++
++        if (rel.hasDirectApk()) {
++            b.setPositiveButton(R.string.app_version_download_and_install, (d, w) -> {
++                // 先把可能残留的旧进度框收掉。若上一次下载还在跑（sBusy 会挡住新的），
++                // 直接覆盖 mProgressDialog 会让旧对话框失去引用、永远关不掉。
++                dismissProgress();
++                mProgressDialog = new AlertDialog.Builder(getContext())
++                    .setTitle(R.string.app_version_downloading)
++                    .setMessage("0%")
++                    .setCancelable(false)
++                    .create();
++                mProgressDialog.show();
++                Updater.download(getContext(), rel, mDownloadCallback);
++            });
++        } else {
++            // 回退路径没拿到 assets 列表，只能引导到发布页手动下载
++            b.setPositiveButton(R.string.app_version_open_release_page, (d, w) -> {
++                try {
++                    Intent i = new Intent(Intent.ACTION_VIEW, Uri.parse(rel.pageUrl));
++                    i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++                    getContext().startActivity(i);
++                } catch (Exception e) {
++                    Updater.toast(getContext(), "无法打开浏览器：" + e.getMessage());
++                }
++            });
++        }
++        b.show();
++    }
++
++    private void dismissProgress() {
++        if (mProgressDialog != null && mProgressDialog.isShowing()) {
++            mProgressDialog.dismiss();
++        }
++        mProgressDialog = null;
++    }
++
++    private static String fmtSize(long bytes) {
++        if (bytes <= 0) return "?";
++        if (bytes < 1024) return bytes + " B";
++        if (bytes < 1024 * 1024) return (bytes / 1024) + " KB";
++        return String.format(java.util.Locale.US, "%.1f MB", bytes / 1024.0 / 1024.0);
+     }
+ 
+     @Override
+@@ -518,6 +632,8 @@ public class VersionCard extends FrameLayout implements View.OnClickListener {
+     protected void onDetachedFromWindow() {
+         super.onDetachedFromWindow();
+         mHandler.removeMessages(0);
++        // 页面被销毁时若进度框还开着，必须收起，否则泄漏窗口并可能抛 WindowLeaked
++        dismissProgress();
+     }
+ 
+     public String getUpdateInfo() {
+diff --git a/app/src/main/java/com/sevtinge/hyperceiler/utils/Updater.java b/app/src/main/java/com/sevtinge/hyperceiler/utils/Updater.java
+new file mode 100644
+index 000000000..edbcaf458
+--- /dev/null
++++ b/app/src/main/java/com/sevtinge/hyperceiler/utils/Updater.java
+@@ -0,0 +1,440 @@
++/*
++  * This file is part of HyperCeiler.
++
++  * HyperCeiler is free software: you can redistribute it and/or modify
++  * it under the terms of the GNU Affero General Public License as
++  * published by the Free Software Foundation, either version 3 of the
++  * License.
++
++  * This program is distributed in the hope that it will be useful,
++  * but WITHOUT ANY WARRANTY; without even the implied warranty of
++  * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
++  * GNU Affero General Public License for more details.
++
++  * You should have received a copy of the GNU Affero General Public License
++  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
++
++  * Copyright (C) 2023-2026 HyperCeiler Contributions
++*/
++package com.sevtinge.hyperceiler.utils;
++
++import android.content.Context;
++import android.content.Intent;
++import android.net.Uri;
++import android.os.Handler;
++import android.os.Looper;
++import android.widget.Toast;
++
++import androidx.annotation.NonNull;
++import androidx.annotation.Nullable;
++import androidx.core.content.FileProvider;
++
++import com.sevtinge.hyperceiler.BuildConfig;
++
++import org.json.JSONArray;
++import org.json.JSONObject;
++
++import java.io.ByteArrayOutputStream;
++import java.io.File;
++import java.io.FileOutputStream;
++import java.io.InputStream;
++import java.net.HttpURLConnection;
++import java.net.URL;
++import java.security.MessageDigest;
++import java.security.NoSuchAlgorithmException;
++import java.util.concurrent.ExecutorService;
++import java.util.concurrent.Executors;
++
++/**
++ * 手动检查更新。
++ *
++ * 只在这套自编译 fork 里使用：版本身份不是上游 versionCode，而是 CI 的 runId。
++ * 每次 CI 构建会把 runId 写进 assets/build_run_id.txt，release tag 形如
++ * v2.10.166-r40005741620，末尾的 r 加数字就是 runId。两支 runId 做数值比较
++ * 才是可靠的「谁更新」判断——versionName 里的 -r4692 是上游 versionCode，
++ * 与本 fork 的构建序号无关，不能拿来比。
++ *
++ * 网络策略（两级回退）：
++ *   1. GitHub Releases API，能一次拿到 assets 列表、文件名、大小、sha256；
++ *   2. 万一 API 超限额（匿名 60 次/小时/IP）或被网络阻断，退到
++ *      releases/latest 的 302 Location 头，只解析 tag 号。
++ *
++ * 下载完成后走 FileProvider 交给系统安装器，由用户自己确认安装。
++ */
++public final class Updater {
++
++    private static final String REPO_OWNER = "tangdino";
++    private static final String REPO_NAME = "hyperceiler-mod";
++
++    private static final String API_URL =
++        "https://api.github.com/repos/" + REPO_OWNER + "/" + REPO_NAME + "/releases?per_page=5";
++    private static final String LATEST_URL =
++        "https://github.com/" + REPO_OWNER + "/" + REPO_NAME + "/releases/latest";
++
++    private static final int CONNECT_TIMEOUT = 8000;
++    private static final int READ_TIMEOUT = 12000;
++    private static final String RUN_ID_ASSET = "build_run_id.txt";
++
++    private static final ExecutorService POOL = Executors.newSingleThreadExecutor();
++    private static final Handler MAIN = new Handler(Looper.getMainLooper());
++
++    /** 连点保护：正在查/正在下时忽略重复触发。 */
++    private static volatile boolean sBusy = false;
++
++    private Updater() {
++    }
++
++    public interface Callback {
++        /** release 不存在或与自己同版本时也回调，version 为空表示已是最新。 */
++        void onResult(@Nullable Release release, @Nullable String error);
++
++        void onProgress(int percent, long downloadedBytes, long totalBytes);
++    }
++
++    public static final class Release {
++        public final String tag;
++        public final long runId;
++        public final String versionName;
++        public final String notes;
++        public final String apkUrl;
++        public final String apkName;
++        public final long apkSize;
++        public final String sha256;
++        /** release 页面地址，回退路径（拿不到 assets）时用它让用户手动下载。 */
++        public final String pageUrl;
++
++        Release(String tag, long runId, String versionName, String notes,
++                String apkUrl, String apkName, long apkSize, String sha256,
++                String pageUrl) {
++            this.tag = tag;
++            this.runId = runId;
++            this.versionName = versionName;
++            this.notes = notes;
++            this.apkUrl = apkUrl;
++            this.apkName = apkName;
++            this.apkSize = apkSize;
++            this.sha256 = sha256;
++            this.pageUrl = pageUrl;
++        }
++
++        /** 是否拿到了可直接下载的 APK 直链。 */
++        public boolean hasDirectApk() {
++            return apkUrl != null && !apkUrl.isEmpty();
++        }
++    }
++
++    // ---------------------------------------------------------------- 本地身份
++
++    /** 本 APK 的 CI runId；CI 未写入 assets 时退回 BuildConfig.GIT_CODE。 */
++    public static long localRunId(@NonNull Context context) {
++        try (InputStream in = context.getAssets().open(RUN_ID_ASSET)) {
++            ByteArrayOutputStream buf = new ByteArrayOutputStream();
++            byte[] b = new byte[256];
++            int n;
++            while ((n = in.read(b)) > 0) buf.write(b, 0, n);
++            String s = buf.toString("UTF-8").trim();
++            if (!s.isEmpty()) return Long.parseLong(s);
++        } catch (Exception ignored) {
++            // 落到下面的兜底
++        }
++        // 关键：这里不能用 BuildConfig.GIT_CODE 兜底。
++        // GIT_CODE 是上游 versionCode（四千级），CI runId 是千万级，
++        // 拿它去比会永远判定「有新版本」。读不到就返回 -1 表示身份未知。
++        return -1L;
++    }
++
++    /** 从 tag（v2.10.166-r40005741620）里取 runId；取不到返回 -1。 */
++    public static long runIdOfTag(@Nullable String tag) {
++        if (tag == null) return -1L;
++        int i = tag.lastIndexOf("-r");
++        if (i < 0 || i + 2 >= tag.length()) return -1L;
++        try {
++            return Long.parseLong(tag.substring(i + 2));
++        } catch (NumberFormatException e) {
++            return -1L;
++        }
++    }
++
++    // ---------------------------------------------------------------- 查询
++
++    public static void check(@NonNull Context context, @NonNull Callback cb) {
++        if (sBusy) {
++            cb.onResult(null, "正在处理上一次请求");
++            return;
++        }
++        sBusy = true;
++
++        final Context app = context.getApplicationContext();
++        final long local = localRunId(app);
++        if (local < 0) {
++            sBusy = false;
++            cb.onResult(null, "本构建未写入构建序号（assets/build_run_id.txt），无法判断版本新旧");
++            return;
++        }
++        POOL.execute(() -> {
++            String error = null;
++            Release found = null;
++            try {
++                found = fetchLatest(app, local);
++            } catch (Exception e) {
++                error = e.getClass().getSimpleName() + ": " + e.getMessage();
++            }
++            final Release r = found;
++            final String err = error;
++            MAIN.post(() -> {
++                sBusy = false;
++                cb.onResult(r, err);
++            });
++        });
++    }
++
++    @Nullable
++    private static Release fetchLatest(Context context, long local) throws Exception {
++        Release fromApi = null;
++        try {
++            fromApi = queryApi(context, local);
++        } catch (Exception e) {
++            // API 不可用（限额/断网/被拦），走回退
++        }
++        if (fromApi != null) return fromApi;
++        return queryLatestRedirect(context, local);
++    }
++
++    @Nullable
++    private static Release queryApi(Context context, long local) throws Exception {
++        String json = httpText(API_URL, "application/vnd.github+json");
++        if (json == null || json.isEmpty()) return null;
++
++        JSONArray arr = new JSONArray(json);
++        for (int i = 0; i < arr.length(); i++) {
++            JSONObject rel = arr.optJSONObject(i);
++            if (rel == null) continue;
++            if (rel.optBoolean("draft", false)) continue;
++            String tag = rel.optString("tag_name", "");
++            long run = runIdOfTag(tag);
++            if (run < 0) continue;
++            // 远端不比本地新，直接判定为最新（列表按时间倒序，后面的更旧）
++            if (run <= local) return null;
++
++            String apkUrl = "";
++            String apkName = "";
++            long apkSize = 0;
++            String sha = "";
++            JSONArray assets = rel.optJSONArray("assets");
++            if (assets != null) {
++                for (int j = 0; j < assets.length(); j++) {
++                    JSONObject a = assets.optJSONObject(j);
++                    if (a == null) continue;
++                    String n = a.optString("name", "");
++                    if (!n.endsWith(".apk")) continue;
++                    apkUrl = a.optString("browser_download_url", "");
++                    apkName = n;
++                    apkSize = a.optLong("size", 0);
++                    String digest = a.optString("digest", "");
++                    if (digest.startsWith("sha256:")) sha = digest.substring(7);
++                    break;
++                }
++            }
++            return new Release(
++                tag, run, versionOfTag(tag), rel.optString("body", ""),
++                apkUrl, apkName, apkSize, sha,
++                "https://github.com/" + REPO_OWNER + "/" + REPO_NAME
++                    + "/releases/tag/" + tag);
++        }
++        return null;
++    }
++
++    @Nullable
++    private static Release queryLatestRedirect(Context context, long local) throws Exception {
++        HttpURLConnection conn =
++            (HttpURLConnection) new URL(LATEST_URL).openConnection();
++        conn.setInstanceFollowRedirects(false);
++        conn.setConnectTimeout(CONNECT_TIMEOUT);
++        conn.setReadTimeout(READ_TIMEOUT);
++        conn.setRequestProperty("User-Agent", userAgent());
++        try {
++            int code = conn.getResponseCode();
++            String loc = conn.getHeaderField("Location");
++            if (code != 302 || loc == null) return null;
++            int slash = loc.lastIndexOf('/');
++            if (slash < 0) return null;
++            String tag = Uri.decode(loc.substring(slash + 1));
++            long run = runIdOfTag(tag);
++            if (run < 0) return null;
++            if (run <= local) return null;
++            // 回退路径只有 tag，拿不到 assets 列表。这里绝不按规则硬拼 APK 文件名：
++            // 实际资产名是 HyperCeiler-<ver>-<commit>-r<code>-canary.apk，
++            // 带 commit hash，拼出来的链接必然 404。改为给 release 页面地址。
++            return new Release(tag, run, versionOfTag(tag), "",
++                "", "", 0, "",
++                "https://github.com/" + REPO_OWNER + "/" + REPO_NAME
++                    + "/releases/tag/" + tag);
++        } finally {
++            conn.disconnect();
++        }
++    }
++
++    /** v2.10.166-r40005741620 -> 2.10.166 */
++    public static String versionOfTag(@Nullable String tag) {
++        if (tag == null) return "";
++        String s = tag.startsWith("v") ? tag.substring(1) : tag;
++        int i = s.lastIndexOf("-r");
++        return i > 0 ? s.substring(0, i) : s;
++    }
++
++    // ---------------------------------------------------------------- 下载
++
++    public static void download(@NonNull Context context, @NonNull Release rel,
++                                @NonNull Callback cb) {
++        if (sBusy) {
++            cb.onResult(rel, "正在处理上一次请求");
++            return;
++        }
++        sBusy = true;
++
++        final Context app = context.getApplicationContext();
++        POOL.execute(() -> {
++            String error = null;
++            try {
++                File dir = new File(app.getCacheDir(), "updates");
++                if (!dir.isDirectory() && !dir.mkdirs()) {
++                    throw new IllegalStateException("无法创建下载目录");
++                }
++                File tmp = new File(dir, "update.apk.part");
++                File out = new File(dir, "update.apk");
++                if (tmp.exists() && !tmp.delete()) {
++                    throw new IllegalStateException("无法清理旧临时文件");
++                }
++
++                HttpURLConnection conn =
++                    (HttpURLConnection) new URL(rel.apkUrl).openConnection();
++                conn.setConnectTimeout(CONNECT_TIMEOUT);
++                conn.setReadTimeout(READ_TIMEOUT);
++                conn.setRequestProperty("User-Agent", userAgent());
++                conn.setInstanceFollowRedirects(true);
++                // GitHub API 的 assets[].digest 给出 sha256 时，边下边算摘要，下完比对。
++                // 原来只校验长度，CDN 返回被截断/篡改的同长包发现不了。
++                // 必须声明在 try 之外：conn 的 finally 之后还要拿它做比对。
++                MessageDigest md = null;
++                if (rel.sha256 != null && !rel.sha256.isEmpty()) {
++                    try {
++                        md = MessageDigest.getInstance("SHA-256");
++                    } catch (NoSuchAlgorithmException e) {
++                        throw new IllegalStateException("设备缺少 SHA-256 实现", e);
++                    }
++                }
++                try {
++                    int code = conn.getResponseCode();
++                    if (code / 100 != 2) {
++                        throw new IllegalStateException("HTTP " + code);
++                    }
++                    long total = rel.apkSize > 0 ? rel.apkSize : conn.getContentLengthLong();
++                    try (InputStream in = conn.getInputStream();
++                         FileOutputStream fos = new FileOutputStream(tmp)) {
++                        byte[] b = new byte[65536];
++                        long got = 0;
++                        int lastPct = -1;
++                        int n;
++                        while ((n = in.read(b)) > 0) {
++                            fos.write(b, 0, n);
++                            if (md != null) md.update(b, 0, n);
++                            got += n;
++                            int pct = total > 0 ? (int) (got * 100 / total) : -1;
++                            if (pct != lastPct) {
++                                lastPct = pct;
++                                final int fp = pct;
++                                final long fg = got;
++                                final long ft = total;
++                                MAIN.post(() -> cb.onProgress(fp, fg, ft));
++                            }
++                        }
++                        fos.flush();
++                    }
++                } finally {
++                    conn.disconnect();
++                }
++
++                if (!tmp.renameTo(out)) {
++                    throw new IllegalStateException("无法写入最终文件");
++                }
++                if (rel.apkSize > 0 && out.length() != rel.apkSize) {
++                    throw new IllegalStateException(
++                        "大小校验失败，期望 " + rel.apkSize + " 实际 " + out.length());
++                }
++                // 摘要不符说明包已损坏或被替换：删掉文件，绝不交给安装器。
++                if (md != null) {
++                    String actual = toHex(md.digest());
++                    if (!actual.equalsIgnoreCase(rel.sha256)) {
++                        //noinspection ResultOfMethodCallIgnored
++                        out.delete();
++                        throw new IllegalStateException(
++                            "SHA-256 校验失败，更新包可能已损坏或被篡改\n期望 " + rel.sha256
++                                + "\n实际 " + actual);
++                    }
++                }
++                install(app, out);
++            } catch (Exception e) {
++                error = e.getClass().getSimpleName() + ": " + e.getMessage();
++            }
++            final String err = error;
++            MAIN.post(() -> {
++                sBusy = false;
++                cb.onResult(rel, err);
++            });
++        });
++    }
++
++    private static void install(Context context, File apk) throws Exception {
++        Uri uri = FileProvider.getUriForFile(
++            context, context.getPackageName() + ".fileprovider", apk);
++        Intent i = new Intent(Intent.ACTION_VIEW);
++        i.setDataAndType(uri, "application/vnd.android.package-archive");
++        i.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
++        i.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
++        context.startActivity(i);
++    }
++
++    /** 字节数组转小写十六进制；用于和 GitHub 的 sha256 digest 比对。 */
++    private static String toHex(byte[] data) {
++        StringBuilder sb = new StringBuilder(data.length * 2);
++        for (byte x : data) {
++            sb.append(Character.forDigit((x >> 4) & 0xF, 16));
++            sb.append(Character.forDigit(x & 0xF, 16));
++        }
++        return sb.toString();
++    }
++
++    public static void toast(Context context, String msg) {
++        MAIN.post(() -> Toast.makeText(context.getApplicationContext(), msg,
++            Toast.LENGTH_LONG).show());
++    }
++
++    // ---------------------------------------------------------------- 网络底座
++
++    private static String userAgent() {
++        return "HyperCeiler/" + BuildConfig.VERSION_NAME
++            + " (" + BuildConfig.BUILD_TYPE + ")";
++    }
++
++    @Nullable
++    private static String httpText(String urlStr, String accept) throws Exception {
++        HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
++        conn.setConnectTimeout(CONNECT_TIMEOUT);
++        conn.setReadTimeout(READ_TIMEOUT);
++        conn.setRequestProperty("User-Agent", userAgent());
++        conn.setRequestProperty("Accept", accept);
++        try {
++            int code = conn.getResponseCode();
++            if (code / 100 != 2) return null;
++            try (InputStream in = conn.getInputStream()) {
++                ByteArrayOutputStream buf = new ByteArrayOutputStream();
++                byte[] b = new byte[8192];
++                int n;
++                while ((n = in.read(b)) > 0) buf.write(b, 0, n);
++                return buf.toString("UTF-8");
++            }
++        } finally {
++            conn.disconnect();
++        }
++    }
++}
+diff --git a/app/src/main/res/values-zh-rCN/strings_update_checker.xml b/app/src/main/res/values-zh-rCN/strings_update_checker.xml
+new file mode 100644
+index 000000000..7f3090437
+--- /dev/null
++++ b/app/src/main/res/values-zh-rCN/strings_update_checker.xml
+@@ -0,0 +1,10 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <string name="app_version_check_update">检查更新</string>
++    <string name="app_version_check_failed">检查更新失败：</string>
++    <string name="app_version_latest">当前已是最新版本。</string>
++    <string name="app_version_new_found">发现新版本 %1$s\n</string>
++    <string name="app_version_downloading">正在下载更新</string>
++    <string name="app_version_download_and_install">下载并安装</string>
++    <string name="app_version_open_release_page">打开发布页</string>
++</resources>
+diff --git a/app/src/main/res/values/strings_update_checker.xml b/app/src/main/res/values/strings_update_checker.xml
+new file mode 100644
+index 000000000..7f3090437
+--- /dev/null
++++ b/app/src/main/res/values/strings_update_checker.xml
+@@ -0,0 +1,10 @@
++<?xml version="1.0" encoding="utf-8"?>
++<resources>
++    <string name="app_version_check_update">检查更新</string>
++    <string name="app_version_check_failed">检查更新失败：</string>
++    <string name="app_version_latest">当前已是最新版本。</string>
++    <string name="app_version_new_found">发现新版本 %1$s\n</string>
++    <string name="app_version_downloading">正在下载更新</string>
++    <string name="app_version_download_and_install">下载并安装</string>
++    <string name="app_version_open_release_page">打开发布页</string>
++</resources>
+diff --git a/app/src/main/res/xml/file_paths.xml b/app/src/main/res/xml/file_paths.xml
+index 6c8642bfe..cc91646dd 100644
+--- a/app/src/main/res/xml/file_paths.xml
++++ b/app/src/main/res/xml/file_paths.xml
+@@ -24,6 +24,9 @@
+     <cache-path
+         name="shared_logs"
+         path="shared_logs/" />
++    <cache-path
++        name="update_apk"
++        path="updates/" />
+     <external-files-path
+         name="external_logs"
+         path="." />
