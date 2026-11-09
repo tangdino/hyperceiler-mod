@@ -1,0 +1,253 @@
+name: Sync Upstream & Build (patch architecture)
+
+# fork 的 main 分支 = 干净上游 + patches/ + scripts/ + 本工作流 + CUSTOM.md
+# 定制源码不进 main；每次 CI 现拉上游、现打补丁、现编译。
+# 这样上游改了同文件也不会产生 git 冲突，只会让某个补丁的 anchor 失效，
+# 而 anchor 失效是可定位、可 ABSORBED 判定、可按策略处理的。
+
+on:
+  schedule:
+    - cron: '0 6 * * *'
+  workflow_dispatch:
+    inputs:
+      force_build:
+        description: '即使上游无更新也编译（不发 release，只出 artifact）'
+        type: boolean
+        default: false
+      force_release:
+        description: '即使上游无更新也发 release（验证 push + release 链路用）'
+        type: boolean
+        default: false
+      on_patch_fail:
+        description: '补丁应用失败时的策略'
+        type: choice
+        options: [fail, skip]
+        default: fail
+
+permissions:
+  contents: write
+  packages: read
+
+concurrency:
+  group: sync-build
+  cancel-in-progress: false
+
+jobs:
+  sync-build:
+    runs-on: ubuntu-24.04
+    env:
+      ON_PATCH_FAIL: ${{ inputs.on_patch_fail || 'fail' }}
+    steps:
+      - name: Checkout fork
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+
+      - name: Install SDK packages
+        run: |
+          SDK_ROOT="${ANDROID_SDK_ROOT:-${ANDROID_HOME:-/usr/local/lib/android/sdk}}"
+          SDKM=$(find "$SDK_ROOT/cmdline-tools" -maxdepth 3 -name sdkmanager -type f 2>/dev/null | sort -V | tail -1)
+          if [ -z "$SDKM" ]; then
+            echo "::error::未在 $SDK_ROOT 下找到 sdkmanager"
+            exit 1
+          fi
+          echo "$(dirname "$SDKM")" >> "$GITHUB_PATH"
+          echo "ANDROID_SDK_ROOT=$SDK_ROOT" >> "$GITHUB_ENV"
+          yes | "$SDKM" --licenses >/dev/null 2>&1 || true
+          # 包名必须是 android-37.0：compileSdkMinor=0 之后 Google 改了包名。
+          "$SDKM" "platforms;android-37.0" "build-tools;37.0.0"
+          for D in "$SDK_ROOT/platforms/android-37.0" "$SDK_ROOT/build-tools/37.0.0"; do
+            [ -d "$D" ] || { echo "::error::SDK 组件缺失：$D"; exit 1; }
+          done
+
+      - name: Restore signing config
+        env:
+          SIGNING_PROPERTIES: ${{ secrets.SIGNING_PROPERTIES }}
+          SIGNING_KEYSTORE_B64: ${{ secrets.SIGNING_KEYSTORE_B64 }}
+        run: |
+          if [ -z "$SIGNING_PROPERTIES" ] || [ -z "$SIGNING_KEYSTORE_B64" ]; then
+            echo "::error::缺少 SIGNING_PROPERTIES / SIGNING_KEYSTORE_B64；本项目禁止 debug 签名"
+            exit 1
+          fi
+          printf '%s' "$SIGNING_PROPERTIES" > signing.properties
+          chmod 600 signing.properties
+          printf '%s' "$SIGNING_KEYSTORE_B64" | base64 -d > hyperceiler-release.keystore
+          chmod 600 hyperceiler-release.keystore
+          sed -i "s|^storeFile[[:space:]]*=.*|storeFile=${GITHUB_WORKSPACE}/hyperceiler-release.keystore|" signing.properties
+          grep -q "storeFile=${GITHUB_WORKSPACE}/hyperceiler-release.keystore" signing.properties || {
+            echo "::error::signing.properties 中未找到可改写的 storeFile 行"; exit 1; }
+          KS_SIZE=$(stat -c%s hyperceiler-release.keystore)
+          [ "$KS_SIZE" -ge 1000 ] || { echo "::error::keystore 还原失败（$KS_SIZE 字节）"; exit 1; }
+          echo "keystore 已还原（$KS_SIZE 字节）"
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      # fork 侧元文件（patches / scripts / 本工作流 / CUSTOM.md）先搬出去，
+      # reset 到上游后原样放回，保证 main 永远是「干净上游 + 这几样」。
+      - name: Stash fork metadata
+        run: |
+          rm -rf /tmp/hc-meta && mkdir -p /tmp/hc-meta
+          # .gitignore 必须一起搬：上游 .gitignore 不含 keystore 规则，
+          # reset 后如果留着上游版本，后面 git add -A 会把还原出来的 keystore 提交进去。
+          for P in patches scripts .github CUSTOM.md .gitignore; do
+            [ -e "$P" ] && cp -a "$P" /tmp/hc-meta/ || true
+          done
+          ls -R /tmp/hc-meta | head -40
+
+      - name: Sync upstream (reset to clean upstream)
+        run: |
+          git remote add upstream https://github.com/ReChronoRain/HyperCeiler.git 2>/dev/null || true
+          UPSTREAM_BRANCH="${UPSTREAM_BRANCH:-main}"
+          if ! git fetch upstream "$UPSTREAM_BRANCH"; then
+            echo "::error::拉取上游 $UPSTREAM_BRANCH 失败（分支名可能又改名了）"; exit 1
+          fi
+          UP_SHA=$(git rev-parse "upstream/$UPSTREAM_BRANCH")
+          OLD_SHA=$(git rev-parse HEAD)
+          echo "UP_SHA=$UP_SHA" >> "$GITHUB_ENV"
+          echo "OLD_SHA=$OLD_SHA" >> "$GITHUB_ENV"
+          git reset --hard "$UP_SHA"
+
+          # 计算上游 versionCode 并注入，供 app/build.gradle.kts 的 06 补丁读取。
+          # 上游公式是 versionCode = 5 + gitCommitCount；此刻 HEAD 正是上游提交，
+          # 且 checkout 用 fetch-depth: 0，提交数可信。
+          # 必须在 Push clean main 之前算，否则会多出 sync commit 导致偏大。
+          UP_COUNT=$(git rev-list --count HEAD)
+          UP_VERSION_CODE=$(( UP_COUNT + 5 ))
+          echo "HC_UPSTREAM_VERSION_CODE=$UP_VERSION_CODE" >> "$GITHUB_ENV"
+          echo "上游 versionCode = $UP_VERSION_CODE（提交数 $UP_COUNT + 5）"
+          for P in patches scripts .github CUSTOM.md .gitignore; do
+            [ -e "/tmp/hc-meta/$P" ] && cp -a "/tmp/hc-meta/$P" . || true
+          done
+          # 上游源码变了 = 需要重建 main / 需要出包
+          if [ "$UP_SHA" != "$OLD_SHA" ]; then
+            echo "UPSTREAM_CHANGED=true" >> "$GITHUB_ENV"
+            echo "上游已更新：${OLD_SHA:0:8} → ${UP_SHA:0:8}"
+          else
+            echo "UPSTREAM_CHANGED=false" >> "$GITHUB_ENV"
+            echo "上游无更新（${UP_SHA:0:8}）"
+          fi
+
+      - name: Push clean main (upstream + fork metadata)
+        if: env.UPSTREAM_CHANGED == 'true' || inputs.force_release
+        run: |
+          # 双保险：即使 .gitignore 意外失效，也绝不把签名材料推上远端
+          git rm --cached -q --ignore-unmatch signing.properties hyperceiler-release.keystore 2>/dev/null || true
+          git add -A
+          git rm --cached -q --ignore-unmatch signing.properties hyperceiler-release.keystore 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "main 无需更新"
+          else
+            git commit -m "sync: upstream ${UP_SHA:0:8}"
+            git push --force-with-lease origin HEAD:main
+            echo "已把 main 同步为 上游 ${UP_SHA:0:8} + fork 元文件"
+          fi
+
+      - name: Enforce build discipline
+        run: |
+          # 禁止 debug 签名 + .gitignore；属构建纪律，不走 patches 机制。
+          # 退出码 3 = 上游改写了签名配置结构，必须人工确认，不能静默放过。
+          python3 scripts/enforce_infra.py --repo .
+
+      - name: Apply custom patches
+        id: patch
+        run: |
+          python3 scripts/apply_all.py --repo . --on-fail "${ON_PATCH_FAIL}" --json-out /tmp/patch-result.json
+          echo "PATCH_RC=$?" >> "$GITHUB_ENV"
+
+      - name: Patch summary
+        if: always()
+        run: |
+          cat /tmp/hc-patch-summary.md >> "$GITHUB_STEP_SUMMARY" || true
+          if [ -f /tmp/patch-result.json ]; then
+            echo '```json' >> "$GITHUB_STEP_SUMMARY"
+            cat /tmp/patch-result.json >> "$GITHUB_STEP_SUMMARY"
+            echo '```' >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Prepare build
+        run: |
+          # signing.properties 在 reset --hard 时被清掉过，这里重新落一份
+          if [ ! -f signing.properties ]; then
+            echo "::error::signing.properties 丢失"; exit 1
+          fi
+          sed -i "s|^storeFile[[:space:]]*=.*|storeFile=${GITHUB_WORKSPACE}/hyperceiler-release.keystore|" signing.properties
+          cat > local.properties <<EOF
+          sdk.dir=${ANDROID_SDK_ROOT}
+          EOF
+          # 把本次 CI 的 run_id 落进 assets，供 App 内的「手动检查更新」比对版本。
+          # 为什么不用 versionName：它的 -r4692 是上游 versionCode，与 fork 的
+          # 构建序号无关，两个数比不出大小。run_id 单调递增，才是可靠身份。
+          mkdir -p app/src/main/assets
+          printf '%s' "${GITHUB_RUN_ID}" > app/src/main/assets/build_run_id.txt
+          echo "build_run_id.txt = ${GITHUB_RUN_ID}"
+
+          echo "worktree 变更概览："
+          git status --short | head -30
+
+      - name: Build APK
+        if: env.UPSTREAM_CHANGED == 'true' || inputs.force_release || inputs.force_build
+        run: ./gradlew --no-daemon assembleCanary
+
+      - name: Upload APK artifact
+        if: env.UPSTREAM_CHANGED == 'true' || inputs.force_release || inputs.force_build
+        uses: actions/upload-artifact@v4
+        with:
+          name: HyperCeiler-canary-${{ github.run_id }}
+          path: app/build/outputs/apk/canary/*.apk
+          if-no-files-found: error
+
+      - name: Create release
+        if: env.UPSTREAM_CHANGED == 'true' || inputs.force_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VER=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts | head -1)
+          [ -n "$VER" ] || { echo "::error::未能解析 versionName"; exit 1; }
+          SHORT=$(git rev-parse --short "$UP_SHA")
+          TAG="v${VER}-r${GITHUB_RUN_ID}"
+          APK=$(find app/build/outputs/apk/canary -name '*.apk' | head -1)
+          [ -n "$APK" ] || { echo "::error::未找到 APK"; exit 1; }
+          # 补丁状态与「定制内容」都从 patch-result.json 派生。
+          # 原来定制内容是手写死的，新增补丁后 release 说明就漏了（第 5 条曾漏过）。
+          python3 - <<'PY'
+          import json, pathlib
+          p = pathlib.Path("/tmp/patch-result.json")
+          rows, names = [], []
+          if not p.exists():
+              rows = ["补丁结果缺失"]
+          else:
+              d = json.loads(p.read_text())
+              for r in d["patches"]:
+                  st = r["status"]
+                  mark = {"APPLIED": "✅", "ALREADY_APPLIED": "✅",
+                          "ABSORBED": "🟰", "FAILED": "❌"}.get(st, "•")
+                  rows.append("- %s %s — `%s`" % (mark, r["name"], st))
+                  # 只有真正进了这版包的补丁才算「定制内容」
+                  if st in ("APPLIED", "ALREADY_APPLIED"):
+                      names.append("- " + r["name"])
+          pathlib.Path("/tmp/patch-note.txt").write_text("\n".join(rows), encoding="utf-8")
+          pathlib.Path("/tmp/custom-note.txt").write_text("\n".join(names), encoding="utf-8")
+          PY
+          PATCH_NOTE=$(cat /tmp/patch-note.txt)
+          CUSTOM_NOTE=$(cat /tmp/custom-note.txt)
+          # 必须显式 --repo：为拉上游加了 upstream remote，gh 会据此推断
+          # 错误的目标仓库（曾 403 打到 ReChronoRain/HyperCeiler）。
+          gh release create "$TAG" "$APK" --repo "$GITHUB_REPOSITORY" \
+            --title "HyperCeiler 定制版 v${VER}-r${GITHUB_RUN_ID}" \
+            --notes "自动基于上游 ${SHORT} 编译（patch 架构，非 merge）。
+
+          ## 补丁状态
+          ${PATCH_NOTE}
+
+          ## 定制内容
+          ${CUSTOM_NOTE}"
