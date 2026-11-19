@@ -1,0 +1,131 @@
+diff --git a/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/mishare/NoAutoTurnOff.kt b/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/mishare/NoAutoTurnOff.kt
+index 5505c7895..997872ab0 100644
+--- a/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/mishare/NoAutoTurnOff.kt
++++ b/library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/mishare/NoAutoTurnOff.kt
+@@ -32,7 +32,8 @@ object NoAutoTurnOff : BaseHook() {
+ 
+     override fun initDexKit(): Boolean {
+         stopAdvertAllMethod
+-        showToastMethod
++        setAdvertAllMethod
++        changeSwitchStatusMethod
+         toastMethodNew
+         return true
+     }
+@@ -46,35 +47,63 @@ object NoAutoTurnOff : BaseHook() {
+         } as? Method
+     }
+ 
+-    private val toastMethodNew by lazy<List<Method>> {
+-        optionalMemberList("NoAutoTurnOff4N") {
++    private val setAdvertAllMethod by lazy {
++        optionalMember("NoAutoTurnOffSetAdvertAll") {
+             it.findMethod {
+                 matcher {
+                     declaredClass {
+-                        usingStrings("MiShareStateMachine")
++                        usingStrings("SettingsUtils")
+                     }
+-                    paramCount = 0
++                    returnType = "void"
++                    paramTypes = listOf("android.content.Context", "boolean")
++                    modifiers = Modifier.STATIC
++                    usingStrings("mishare_enabled", "setAdvertAll: ")
+                 }
+-            }
+-        }
++            }.singleOrNull()
++        } as? Method
+     }
+ 
+-    private val showToastMethod by lazy<Method?> {
+-        optionalMember("NoAutoTurnOff5") {
++
++    private val changeSwitchStatusMethod by lazy {
++        optionalMember("NoAutoTurnOffChangeSwitchStatus") {
+             it.findMethod {
+                 matcher {
+                     declaredClass {
+-                        fieldCount(0)
+-                        methodCount(2)
++                        usingStrings("MiShareSwitchHelper")
+                     }
+                     returnType = "void"
+-                    paramTypes = listOf("android.content.Context", "java.lang.CharSequence", "int")
++                    paramTypes = listOf("int")
+                     modifiers = Modifier.STATIC
++                    usingStrings("changeSwitchStatus status: ")
+                 }
+             }.singleOrNull()
++        } as? Method
++    }
++
++    private val toastMethodNew by lazy<List<Method>> {
++        optionalMemberList("NoAutoTurnOff4N") {
++            it.findMethod {
++                matcher {
++                    declaredClass {
++                        usingStrings("MiShareStateMachine")
++                    }
++                    paramCount = 0
++                }
++            }
+         }
+     }
+ 
++    // 判断“是不是互传那两个倒计时提示被置空后产生的空白 Toast”
++    // 只有空白才拦，其它 Toast（传输状态等）保持正常显示。
++    private fun isBlankMishareToast(toast: android.widget.Toast): Boolean {
++        return runCatching {
++            val tv = toast.view?.findViewById<android.widget.TextView>(android.R.id.message)
++            val text = tv?.text?.toString() ?: return false
++            // 仅当文案为空/纯空白时拦截（互传倒计时文案已被替换为 ""）
++            text.isBlank()
++        }.getOrDefault(false)
++    }
++
+     override fun init() {
+ 
+         // 禁用小米互传功能自动关闭部分
+@@ -82,6 +111,21 @@ object NoAutoTurnOff : BaseHook() {
+             returnConstant(null)
+         }
+ 
++        // HyperOS 3 上自动关闭还会直接写 mishare_enabled=false，拦截所有关闭写入，保留开启写入。
++        setAdvertAllMethod?.createBeforeHook {
++            if (it.args.getOrNull(1) == false) {
++                it.result = null
++            }
++        }
++
++        // 自动关闭最终会把 switch_status 改为 0/1；开启该功能后固定保持“全部设备可发现”的 2。
++        changeSwitchStatusMethod?.createBeforeHook {
++            val status = it.args.getOrNull(0) as? Int
++            if (status != null && status < 2) {
++                it.args[0] = 2
++            }
++        }
++
+ 
+         // 干掉小米互传十分钟倒计时 Toast
+         Context::class.java.findMethod {
+@@ -99,10 +143,15 @@ object NoAutoTurnOff : BaseHook() {
+             }
+         }
+ 
+-        showToastMethod?.createHook {
+-            before { param ->
+-                if (param.args[1].toString() == "") param.result =
+-                    null
++        // 屏蔽互传倒计时产生的“空白 Toast”（文案已被替换成空字符串）。
++        // hook 系统 Toast.show()：系统 API 不会随互传升级而改变，永久稳定。
++        // 仅拦“空白文本”的 Toast，互传其它提示（传输状态等）保持正常显示。
++        runCatching {
++            android.widget.Toast::class.java.findMethod {
++                name("show")
++            }.createBeforeHook {
++                val toast = it.thisObject as? android.widget.Toast
++                if (toast != null && isBlankMishareToast(toast)) it.result = null
+             }
+         }
+ 
