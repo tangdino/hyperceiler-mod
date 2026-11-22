@@ -1,0 +1,110 @@
+diff --git a/app/src/main/cpp/targets/home/tweaks/entry.cpp b/app/src/main/cpp/targets/home/tweaks/entry.cpp
+index 2ba8989ac..8e10640cf 100644
+--- a/app/src/main/cpp/targets/home/tweaks/entry.cpp
++++ b/app/src/main/cpp/targets/home/tweaks/entry.cpp
+@@ -43,6 +43,28 @@ std::atomic<uint32_t> g_loadedCount{0};
+    one may create the monitoring thread. */
+ std::atomic<bool> g_tweaksStarted{false};
+ 
++/*
++ * Give-up policy for a launcher that never exposes the target image.
++ *
++ * TryDiscoverImage() needs libapp.so in the launcher process. On builds where the desktop keeps
++ * its layout in Java and ships no such library (the four natives present are filament/gltf/jniLibs),
++ * discovery can never succeed: the retry is not slow, it is hopeless. Leaving the loop at the 50 ms
++ * start-up period spins a permanent thread - field measurement on such a device showed 28.7% of one
++ * core, i.e. a twice-a-second re-read of a 10k-line /proc/self/maps plus a symbol rescan that always
++ * returns the same "not found".
++ *
++ * The loop therefore backs off while discovery keeps failing and stops for good once the grace
++ * window is spent. A process that later loads the image still gets its one-shot chance through
++ * FastPatchOnLibraryLoad(), which runs off the linker hook rather than off this thread, so the
++ * feature is not lost on a launcher that does ship libapp.so - it is only this monitor that quits.
++ */
++constexpr uint64_t kGiveUpGraceMs = 60000;
++constexpr uint64_t kGiveUpPeriodMs = 500;
++
++/* Set once the monitor thread has stopped itself; keeps a later StartHomeTweaks from relaunching
++   a thread that is known to have nothing to do in this process. */
++std::atomic<bool> g_monitorGaveUp{false};
++
+ struct AppliedPatch {
+     uintptr_t address;
+     uint32_t oldWord;
+@@ -862,10 +884,12 @@ bool TryDiscoverImage() {
+ void MonitorLoop() {
+     uint64_t nextConfigCheck = 0;
+ 
++    /* When discovery started failing, and whether the one-off scene dump has been written. */
++    uint64_t firstFailAt = 0;
++    bool dumped = false;
++
+     for (;;) {
+         if (!TryDiscoverImage()) {
+-            static uint64_t firstFailAt = 0;
+-            static bool dumped = false;
+             const uint64_t now = NowMs();
+             if (firstFailAt == 0) firstFailAt = now;
+             if (!dumped && now - firstFailAt > 3000) {
+@@ -875,9 +899,31 @@ void MonitorLoop() {
+                 DumpLoadedLibraries(50);
+                 DumpApkMaps(30);
+             }
++            /*
++             * Stop for good once the grace window is spent. See kGiveUpGraceMs: on a launcher that
++             * ships no libapp.so this is not a slow start, it is a permanent condition, and the
++             * 50 ms start-up period would otherwise spin here for the lifetime of the process.
++             * The image-loaded hook keeps its own one-shot path, so a launcher that does have the
++             * library still gets patched - only this monitor thread retires.
++             */
++            if (now - firstFailAt >= kGiveUpGraceMs) {
++                LOGW("找不到 %s 已满 %llu s，判定本进程无该目标，监视线程退出（补丁未生效）",
++                     kTargetLibName,
++                     static_cast<unsigned long long>((now - firstFailAt) / 1000));
++                g_monitorGaveUp.store(true, std::memory_order_release);
++                return;
++            }
++        } else {
++            firstFailAt = 0;
+         }
+ 
+-        uint64_t periodMs = 50;
++        /*
++         * Fast only while there is something to do. Before this change the period was 50 ms
++         * unconditionally during start-up and while discovery failed, which on a device without the
++         * image meant a maps re-read every 50 ms forever; the back-off below keeps the retry cheap
++         * without giving up early on a launcher that simply loads the library a moment later.
++         */
++        uint64_t periodMs = (firstFailAt != 0) ? kGiveUpPeriodMs : 50;
+         {
+             std::lock_guard<std::mutex> work(g_workMutex);
+             State* state = &g_state;
+@@ -932,6 +978,14 @@ void OnNativeLibraryLoaded(const char* name, void* ) {
+     if (len < want || strcmp(name + (len - want), kTargetLibName) != 0) return;
+     LOGI("检测到 %s 加载，立即落补丁", name);
+ 
++    /*
++     * The library this module patches is now in the process, so the give-up verdict (if any) is no
++     * longer true: clear it together with the started flag, otherwise StartHomeTweaks stays a no-op
++     * and the image-loaded fast path is the only thing that would ever run.
++     */
++    g_monitorGaveUp.store(false, std::memory_order_release);
++    g_tweaksStarted.store(false, std::memory_order_release);
++
+     FastPatchOnLibraryLoad();
+ 
+     {
+@@ -973,6 +1027,13 @@ void WakeMonitor() {
+  */
+ void StartHomeTweaks() {
+     if (!IsLauncherProcess()) return;
++    /*
++     * A previous monitor already decided this process has no target image and retired. Re-creating
++     * it here would restart exactly the spin that decision ended, and no entry point knows better
++     * than the loop itself - the only thing that can revive the feature is the image actually being
++     * loaded, and that path resets the flag (see OnNativeLibraryLoaded).
++     */
++    if (g_monitorGaveUp.load(std::memory_order_acquire)) return;
+     if (g_tweaksStarted.exchange(true, std::memory_order_acq_rel)) return;
+     pthread_t thread;
+     if (pthread_create(&thread, nullptr,

@@ -1,0 +1,40 @@
+diff --git a/app/src/main/java/com/sevtinge/hyperceiler/home/banner/HomePageBannerManager.java b/app/src/main/java/com/sevtinge/hyperceiler/home/banner/HomePageBannerManager.java
+index 802df4dd6..0c2af6b26 100644
+--- a/app/src/main/java/com/sevtinge/hyperceiler/home/banner/HomePageBannerManager.java
++++ b/app/src/main/java/com/sevtinge/hyperceiler/home/banner/HomePageBannerManager.java
+@@ -179,7 +179,7 @@ public class HomePageBannerManager {
+     }
+ 
+     private static BannerBean createWarningBannerIfNeeded(Context context) {
+-        if (!SignUtils.isSignCheckPass(context)) {
++        if (false && !SignUtils.isSignCheckPass(context)) {
+             return createWarningBanner(
+                 "warning_sign",
+                 context.getString(R.string.headtip_warn_sign_verification_failed),
+diff --git a/app/src/main/java/com/sevtinge/hyperceiler/utils/DeviceInfoBuilder.java b/app/src/main/java/com/sevtinge/hyperceiler/utils/DeviceInfoBuilder.java
+index b9e15bc84..6db4b59da 100644
+--- a/app/src/main/java/com/sevtinge/hyperceiler/utils/DeviceInfoBuilder.java
++++ b/app/src/main/java/com/sevtinge/hyperceiler/utils/DeviceInfoBuilder.java
+@@ -132,8 +132,7 @@ public class DeviceInfoBuilder {
+             }
+             String loggerStatus = IS_LOGGER_ALIVE + ", " + formatLoggerStatusDetail();
+             propertiesCheck.put("LoggerStatus", loggerStatus);
+-            propertiesCheck.put("Signature", SignUtils.getSHA256Signature(context));
+-            propertiesCheck.put("SignCheckPass", String.valueOf(SignUtils.isSignCheckPass(context)));
++            // Signature fields removed by local build (device check no longer collects signing info).
+         } catch (Exception e) {
+             AndroidLog.w(TAG, "Failed to collect check info", e);
+         }
+diff --git a/app/src/main/java/com/sevtinge/hyperceiler/utils/NoticeProcessor.java b/app/src/main/java/com/sevtinge/hyperceiler/utils/NoticeProcessor.java
+index aeac6c665..03f0ebd8d 100644
+--- a/app/src/main/java/com/sevtinge/hyperceiler/utils/NoticeProcessor.java
++++ b/app/src/main/java/com/sevtinge/hyperceiler/utils/NoticeProcessor.java
+@@ -227,7 +227,7 @@ public class NoticeProcessor {
+         }
+ 
+         // Is need sign check
+-        return !n.signCheckPassNeed || SignUtils.isSignCheckPass(context);
++        return !n.signCheckPassNeed || true;
+     }
+ 
+     public static boolean isNeedShowTosDialog(NoticeProcessor.NoticeResult result){
