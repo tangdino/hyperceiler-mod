@@ -1,0 +1,17 @@
+{
+  "name": "versionCode 对齐上游",
+  "order": 60,
+  "desc": "versionCode 改为优先读取 CI 注入的 HC_UPSTREAM_VERSION_CODE，使 fork 产物与上游 versionCode 精确一致；本地未设置时回落到上游原公式 5+gitCommitCount。",
+  "upstream_absorbed_if": [
+    {
+      "path": "app/build.gradle.kts",
+      "absent_contains": "5 + gitCommitCount"
+    }
+  ],
+  "our_markers": [
+    {
+      "path": "app/build.gradle.kts",
+      "contains": "HC_UPSTREAM_VERSION_CODE"
+    }
+  ]
+}

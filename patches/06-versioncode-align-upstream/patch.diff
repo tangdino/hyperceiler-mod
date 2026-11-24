@@ -1,0 +1,17 @@
+diff --git a/app/build.gradle.kts b/app/build.gradle.kts
+index c13365f67..d40fab81c 100644
+--- a/app/build.gradle.kts
++++ b/app/build.gradle.kts
+@@ -21,7 +21,11 @@ val gitBranch: String by lazy {
+     val branch = runGitCommand("branch", "--show-current") ?: "unknown"
+     """github\.com[:/](.+?)(\.git)?$""".toRegex().find(url)?.groupValues?.get(1).orEmpty() + "/" + branch
+ }
+-val gitVersionCode: Int by lazy { 5 + gitCommitCount }
++// versionCode 优先取 CI 注入的上游版本号（HC_UPSTREAM_VERSION_CODE），
++// 保证与上游精确一致；本地未设置时回落到上游原公式。
++val gitVersionCode: Int by lazy {
++    System.getenv("HC_UPSTREAM_VERSION_CODE")?.toIntOrNull() ?: (5 + gitCommitCount)
++}
+ 
+ fun runGitCommand(vararg args: String): String? = runCatching {
+     ProcessBuilder(listOf("git") + args)

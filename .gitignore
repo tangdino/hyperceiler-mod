@@ -14,12 +14,8 @@ local.properties
 /app/canary
 /app/debug
 signing.properties
-*.keystore
-*.jks
 /.kotlin
 /library/hook
 *.apk
 /handover/
 /.workbuddy/
-/.reasonix/
-/.vscode/
