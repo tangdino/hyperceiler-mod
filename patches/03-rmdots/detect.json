@@ -1,0 +1,33 @@
+{
+  "name": "隐藏通知省略点 (RmDots)",
+  "order": 30,
+  "desc": "SystemUI NotificationIconContainer$IconState#applyToView 里把 visibleState 1(DOT) 改成 2(HIDDEN)。",
+  "upstream_absorbed_if": [
+    {
+      "path": "library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/systemui/statusbar/icon/all/HideNotificationDots.java",
+      "exists": true
+    },
+    {
+      "path": "library/core/src/main/res/values/strings_rmdots.xml",
+      "exists": true
+    }
+  ],
+  "our_markers": [
+    {
+      "path": "library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/rules/systemui/statusbar/icon/all/HideNotificationDots.java",
+      "contains": "STATE_DOT"
+    },
+    {
+      "path": "library/core/src/main/res/xml/system_ui_status_bar_icon_manage_new.xml",
+      "contains": "prefs_key_system_ui_status_bar_hide_notification_dots"
+    },
+    {
+      "path": "library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/app/SystemUI/SystemUIB.java",
+      "contains": "HideNotificationDots"
+    },
+    {
+      "path": "library/libhook/src/main/java/com/sevtinge/hyperceiler/libhook/app/SystemUI/SystemUIV.java",
+      "contains": "HideNotificationDots"
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "name": "手动检查更新",
+  "order": 50,
+  "desc": "点关于页版本卡片查询 GitHub release，发现新版可下载并调起系统安装器。版本身份用 CI runId 比较（不是 versionCode）。",
+  "upstream_absorbed_if": [],
+  "our_markers": [
+    {
+      "path": "app/src/main/java/com/sevtinge/hyperceiler/about/widget/VersionCard.java",
+      "contains": "Updater.check(getContext(), mUpdateCallback)"
+    },
+    {
+      "path": "app/src/main/java/com/sevtinge/hyperceiler/utils/Updater.java",
+      "contains": "runIdOfTag"
+    },
+    {
+      "path": "app/src/main/AndroidManifest.xml",
+      "contains": "REQUEST_INSTALL_PACKAGES"
+    }
+  ]
+}
